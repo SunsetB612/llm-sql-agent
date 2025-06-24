@@ -4,6 +4,8 @@ import logging
 
 import MySQLdb  
 from mcp.server.fastmcp import FastMCP
+import dotenv 
+dotenv.load_dotenv()
 
 
 # Create MCP server instance
@@ -12,9 +14,9 @@ mcp = FastMCP("mysql-server")
 # Database connection configuration
 DB_CONFIG = {
     "host": os.getenv("DB_HOST", "localhost"),
-    "user": os.getenv("DB_USER", "test"),
-    "passwd": os.getenv("DB_PASSWORD", "test"), 
-    "db": os.getenv("DB_NAME", "test_db"),  
+    "user": os.getenv("DB_USER"),
+    "passwd": os.getenv("DB_PASSWORD"), 
+    "db": os.getenv("DB_NAME"),  
     "port": int(os.getenv("DB_PORT", 3306))
 }
 
@@ -165,4 +167,5 @@ def main():
 
 
 if __name__ == "__main__":
+    main()
     mcp.run()
