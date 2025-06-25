@@ -49,19 +49,45 @@ class SimpleNLQuerySystem:
         else:
             return f"查询失败: {result['query_result']['error']}"
 async def main():
-    print("自然语言查询系统启动，输入 'quit' 退出")
+    print("自然语言查询系统启动，输入 'quit' 退出，输入 'next' 查看下一页，输入 'prev' 查看上一页")
     
     async with SimpleNLQuerySystem() as system:
+        last_sql = None
+        last_result = None
         while True:
-            question = input("请输入您的问题: ").strip()
+            question = input("请输入您的问题或命令(next/prev/quit): ").strip()
             if question.lower() in ["quit", "exit", "退出"]:
                 break
             if not question:
                 continue
-            
+
+            if question.lower() == "next":
+                if last_sql is None:
+                    print("请先进行一次查询。")
+                    continue
+                result = await system.db_handler.next_page()
+                output = system.db_handler.format_results(result, "table")
+                print(output)
+                last_result = result
+                continue
+
+            if question.lower() == "prev":
+                if last_sql is None:
+                    print("请先进行一次查询。")
+                    continue
+                result = await system.db_handler.prev_page()
+                output = system.db_handler.format_results(result, "table")
+                print(output)
+                last_result = result
+                continue
+
+            # 正常自然语言查询
             result = await system.query(question)
             output = system.format_result(result)
             print(output)
+            # 记录本次SQL
+            last_sql = result["sql"]
+            last_result = result["query_result"]
 
 if __name__ == "__main__":
     asyncio.run(main())

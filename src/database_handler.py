@@ -1,14 +1,26 @@
 import asyncio
 import json
 import logging
+import os
 from typing import Dict, Any, Optional, List
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from dataclasses import dataclass
 from datetime import datetime
 
-# 配置日志
-logging.basicConfig(level=logging.INFO)
+# 确保 logs 目录存在
+log_dir = os.path.join(os.path.dirname(__file__), "logs")
+os.makedirs(log_dir, exist_ok=True)
+
+log_file = os.path.join(log_dir, "database_handler.log")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    filename=log_file,
+    filemode='a',
+    encoding='utf-8'
+)
 logger = logging.getLogger(__name__)
 
 @dataclass
@@ -114,33 +126,114 @@ class DatabaseHandler:
             logger.error(f"获取schema失败: {e}")
             raise
     
-    async def execute_sql(self, sql: str) -> Dict[str, Any]:
-        """
-        执行SQL查询
-        
-        Args:
-            sql: SQL语句
+    async def next_page(self) -> Dict[str, Any]:
+        """获取下一页数据"""
+        try:
+            if not self.session:
+                raise Exception("数据库连接未建立")
+
+            logger.info("请求下一页数据")
+            result = await self.session.call_tool("next_page", {})
             
-        Returns:
-            查询结果，格式为:
-            {
-                "success": bool,
-                "results": List[Dict] 或 None,
-                "error": str 或 None,
-                "rowcount": int,
-                "columns": List[str] 或 None
+            if not result.content:
+                return {
+                    "success": False,
+                    "error": "未收到响应",
+                    "results": None,
+                    "rowcount": 0
+                }
+            
+            response_data = json.loads(result.content[0].text)
+            return self._format_pagination_result(response_data)
+            
+        except Exception as e:
+            logger.error(f"获取下一页失败: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "results": None,
+                "rowcount": 0
             }
+
+    async def prev_page(self) -> Dict[str, Any]:
+        """获取上一页数据"""
+        try:
+            if not self.session:
+                raise Exception("数据库连接未建立")
+
+            logger.info("请求上一页数据")
+            result = await self.session.call_tool("prev_page", {})
+            
+            if not result.content:
+                return {
+                    "success": False,
+                    "error": "未收到响应",
+                    "results": None,
+                    "rowcount": 0
+                }
+            
+            response_data = json.loads(result.content[0].text)
+            return self._format_pagination_result(response_data)
+            
+        except Exception as e:
+            logger.error(f"获取上一页失败: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "results": None,
+                "rowcount": 0
+            }
+
+    def _format_pagination_result(self, response_data: Dict) -> Dict[str, Any]:
+        """格式化分页结果"""
+        if response_data.get("success", False):
+            results = response_data.get("results", [])
+            columns = None
+            
+            if results and isinstance(results, list) and len(results) > 0:
+                if isinstance(results[0], dict):
+                    columns = list(results[0].keys())
+            
+            return {
+                "success": True,
+                "results": results,
+                "error": None,
+                "rowcount": len(results) if results else 0,
+                "columns": columns,
+                "pagination": response_data.get("pagination"),
+                "totalRows": response_data.get("totalRows")
+            }
+        else:
+            return {
+                "success": False,
+                "results": None,
+                "error": response_data.get("error", "未知错误"),
+                "rowcount": 0,
+                "columns": None
+            }
+
+    async def execute_sql(self, sql: str, page: int = 0, page_size: int = 50) -> Dict[str, Any]:
+        """
+        执行SQL查询，支持分页
         """
         try:
             if not self.session:
                 raise Exception("数据库连接未建立")
-            
-            logger.info(f"执行SQL: {sql}")
+
+            logger.info(f"执行SQL: {sql}, page: {page}, page_size: {page_size}")
             
             # 通过MCP执行SQL
-            result = await self.session.call_tool("query_data", {"sql": sql})
+            result = await self.session.call_tool("query_data", {
+                "sql": sql,
+                "page": page,
+                "page_size": page_size
+            })
+            
+            logger.info(f"MCP返回结果类型: {type(result)}")
+            logger.info(f"MCP返回内容: {result}")
             
             if not result.content:
+                logger.error("未收到查询结果内容")
                 return {
                     "success": False,
                     "results": None,
@@ -149,8 +242,12 @@ class DatabaseHandler:
                     "columns": None
                 }
             
+            # 打印原始内容用于调试
+            raw_content = result.content[0].text
+            logger.info(f"原始响应内容: {raw_content}")
+            
             # 解析结果
-            response_data = json.loads(result.content[0].text)
+            response_data = json.loads(raw_content)
             
             # 标准化返回格式
             if response_data.get("success", False):
@@ -167,7 +264,9 @@ class DatabaseHandler:
                     "results": results,
                     "error": None,
                     "rowcount": len(results) if results else 0,
-                    "columns": columns
+                    "columns": columns,
+                    "pagination": response_data.get("pagination"),
+                    "totalRows": response_data.get("totalRows")
                 }
             else:
                 return {
@@ -178,6 +277,16 @@ class DatabaseHandler:
                     "columns": None
                 }
                 
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON解析失败: {e}")
+            logger.error(f"原始内容: {raw_content if 'raw_content' in locals() else 'N/A'}")
+            return {
+                "success": False,
+                "results": None,
+                "error": f"JSON解析失败: {str(e)}",
+                "rowcount": 0,
+                "columns": None
+            }
         except Exception as e:
             logger.error(f"SQL执行失败: {e}")
             return {
