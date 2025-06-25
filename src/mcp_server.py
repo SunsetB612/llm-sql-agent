@@ -3,6 +3,7 @@ import os
 import logging
 import time
 from pathlib import Path
+import re
 
 import MySQLdb
 import MySQLdb.cursors
@@ -32,6 +33,8 @@ pagination_state = {
     "page_size": 50,  # 每页显示行数
     "total_rows": 0
 }
+
+SENSITIVE_FIELDS = ['password', 'salary', 'ssn', 'credit_card']
 
 def reset_pagination():
     """重置分页状态"""
@@ -83,24 +86,24 @@ def setup_logger():
     logger = logging.getLogger('mysql-mcp-server')
     logger.setLevel(logging.INFO)
 
-    logger.handlers.clear()
+    # 彻底清空所有 handler（包括 root logger 继承的）
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    # 也清空 root logger 的 handler
+    for handler in logging.getLogger().handlers[:]:
+        logging.getLogger().removeHandler(handler)
 
     formatter = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-    # 追加模式打开日志文件
     file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(formatter)
 
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
-
     logger.addHandler(file_handler)
-    #logger.addHandler(console_handler)
+    # 不加 console_handler
 
     print(f"日志文件路径: {log_file.resolve()}")
     return logger
@@ -262,6 +265,14 @@ def prev_page() -> Dict[str, Any]:
         "pagination": page_info["pagination"]
     }
 
+def contains_sensitive_field(sql: str) -> bool:
+    sql_lower = sql.lower()
+    for field in SENSITIVE_FIELDS:
+        # 匹配字段名，防止误判
+        if re.search(r'\b' + re.escape(field.lower()) + r'\b', sql_lower):
+            return True
+    return False
+
 @mcp.tool()
 def query_data(sql: str, page: int = 0, page_size: int = 50) -> Dict[str, Any]:
     """执行只读SQL查询，支持分页"""
@@ -270,6 +281,14 @@ def query_data(sql: str, page: int = 0, page_size: int = 50) -> Dict[str, Any]:
     logger.info(f"时间戳: {timestamp}")
     logger.info(f"SQL语句: {sql}")
     logger.info(f"请求页码: {page}, 页大小: {page_size}")
+
+    # 敏感字段检测
+    if contains_sensitive_field(sql):
+        logger.warning(f"查询包含敏感字段被拒绝: {sql}")
+        return {
+            "success": False,
+            "error": "查询包含敏感字段，已拒绝执行"
+        }
 
     try:
         # 如果是新查询，重置分页状态
