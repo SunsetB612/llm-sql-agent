@@ -11,3 +11,6 @@ wheels/
 
 .python-version
 .vscode
+
+# Environment variables
+.env
