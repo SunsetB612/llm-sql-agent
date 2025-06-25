@@ -20,7 +20,7 @@ class DatabaseConfig:
     
     def __post_init__(self):
         if self.server_args is None:
-            self.server_args = ["main.py"]
+            self.server_args = ["mcp-server.py"]
 
 class DatabaseHandler:
     """数据库操作处理器，通过MCP与MySQL交互"""

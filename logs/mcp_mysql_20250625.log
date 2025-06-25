@@ -1,0 +1,14 @@
+2025-06-25 18:48:50 - mysql-mcp-server - INFO - === 新的SQL查询开始 ===
+2025-06-25 18:48:50 - mysql-mcp-server - INFO - 时间戳: 2025-06-25 18:48:50
+2025-06-25 18:48:50 - mysql-mcp-server - INFO - SQL语句: SELECT 1 as test
+2025-06-25 18:48:50 - mysql-mcp-server - INFO - 数据库连接成功
+2025-06-25 18:48:50 - mysql-mcp-server - INFO - 只读事务开始
+2025-06-25 18:48:50 - mysql-mcp-server - INFO - 查询执行成功
+2025-06-25 18:48:50 - mysql-mcp-server - INFO - 返回行数: 1
+2025-06-25 18:48:50 - mysql-mcp-server - INFO - === SQL查询结束 ===
+2025-06-25 18:48:50 - mysql-mcp-server - INFO - 数据库连接已关闭
+2025-06-25 18:48:50 - mysql-mcp-server - INFO - === 新的SQL查询开始 ===
+2025-06-25 18:48:50 - mysql-mcp-server - INFO - 时间戳: 2025-06-25 18:48:50
+2025-06-25 18:48:50 - mysql-mcp-server - INFO - SQL语句: DELETE FROM test
+2025-06-25 18:48:50 - mysql-mcp-server - WARNING - 不安全查询被拒绝: DELETE FROM test
+2025-06-25 18:48:50 - mysql-mcp-server - INFO - === SQL查询结束（不安全） ===
