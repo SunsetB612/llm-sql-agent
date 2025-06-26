@@ -3,10 +3,9 @@ import json
 import logging
 import os
 from typing import Dict, Any, Optional, List
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
 from dataclasses import dataclass
 from datetime import datetime
+import pymysql
 
 # 确保 logs 目录存在
 log_dir = os.path.join(os.path.dirname(__file__), "logs")
@@ -25,268 +24,124 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DatabaseConfig:
-    """数据库配置类"""
-    server_command: str = "python"
-    server_args: List[str] = None
-    timeout: int = 30
-    
-    def __post_init__(self):
-        if self.server_args is None:
-            self.server_args = ["mcp_server.py"]
+    host: str = os.getenv("DB_HOST", "localhost")
+    user: str = os.getenv("DB_USER")
+    password: str = os.getenv("DB_PASSWORD")
+    db: str = os.getenv("DB_NAME")
+    port: int = int(os.getenv("DB_PORT", 3306))
+    charset: str = "utf8mb4"
 
 class DatabaseHandler:
-    """数据库操作处理器，通过MCP与MySQL交互"""
-    
+    """数据库操作处理器，直接用 pymysql 连接 MySQL"""
     def __init__(self, config: DatabaseConfig = None):
         self.config = config or DatabaseConfig()
-        self.session: Optional[ClientSession] = None
         self._schema_cache: Optional[Dict] = None
         self._cache_timestamp: Optional[datetime] = None
         self._cache_ttl = 300  # 缓存5分钟
-    
+        self.conn = None
+
     async def __aenter__(self):
-        """异步上下文管理器入口"""
-        await self.connect()
+        self.connect()
         return self
-    
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """异步上下文管理器退出"""
-        await self.disconnect()
-    
-    async def connect(self):
-        """连接到MCP服务器"""
+        self.disconnect()
+
+    def connect(self):
         try:
-            server_params = StdioServerParameters(
-                command=self.config.server_command,
-                args=self.config.server_args
+            self.conn = pymysql.connect(
+                host=self.config.host,
+                user=self.config.user,
+                password=self.config.password,
+                db=self.config.db,
+                port=self.config.port,
+                charset=self.config.charset,
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=True
             )
-            
-            self.client_context = stdio_client(server_params)
-            self.read, self.write = await self.client_context.__aenter__()
-            
-            self.session_context = ClientSession(self.read, self.write)
-            self.session = await self.session_context.__aenter__()
-            
-            await self.session.initialize()
-            logger.info("✓ MCP服务器连接成功")
-            
+            logger.info("✓ 数据库连接成功")
         except Exception as e:
-            logger.error(f"连接MCP服务器失败: {e}")
+            logger.error(f"数据库连接失败: {e}")
             raise
-    
-    async def disconnect(self):
-        """断开MCP服务器连接"""
+
+    def disconnect(self):
         try:
-            if hasattr(self, 'session_context') and self.session_context:
-                await self.session_context.__aexit__(None, None, None)
-            
-            if hasattr(self, 'client_context') and self.client_context:
-                await self.client_context.__aexit__(None, None, None)
-                
-            logger.info("✓ MCP服务器连接已断开")
-            
+            if self.conn:
+                self.conn.close()
+                logger.info("✓ 数据库连接已关闭")
         except Exception as e:
             logger.error(f"断开连接时出错: {e}")
-    
+
     async def get_schema(self, use_cache: bool = True) -> Dict[str, Any]:
-        """
-        获取数据库schema信息
-        
-        Args:
-            use_cache: 是否使用缓存
-            
-        Returns:
-            数据库结构信息
-        """
-        # 检查缓存
         if use_cache and self._is_cache_valid():
             logger.info("使用缓存的schema信息")
             return self._schema_cache
-        
         try:
-            if not self.session:
-                raise Exception("数据库连接未建立")
-            
-            logger.info("正在获取数据库schema...")
-            resource = await self.session.read_resource("mysql://schema")
-            
-            if not resource.contents:
-                raise Exception("未能获取到schema信息")
-            
-            schema_data = json.loads(resource.contents[0].text)
-            
-            # 更新缓存
-            self._schema_cache = schema_data
-            self._cache_timestamp = datetime.now()
-            
-            logger.info("✓ 成功获取数据库schema")
-            return schema_data
-            
+            with self.conn.cursor() as cursor:
+                cursor.execute("SHOW TABLES")
+                tables = cursor.fetchall()
+                table_names = [list(table.values())[0] for table in tables]
+                schema = {}
+                for tname in table_names:
+                    cursor.execute(f"DESCRIBE `{tname}`")
+                    columns = cursor.fetchall()
+                    table_schema = []
+                    for column in columns:
+                        table_schema.append({
+                            "name": column["Field"],
+                            "type": column["Type"],
+                            "null": column["Null"],
+                            "key": column["Key"],
+                            "default": column["Default"],
+                            "extra": column["Extra"]
+                        })
+                    schema[tname] = table_schema
+                schema_data = {
+                    "database": self.config.db,
+                    "tables": schema
+                }
+                self._schema_cache = schema_data
+                self._cache_timestamp = datetime.now()
+                logger.info("✓ 成功获取数据库schema")
+                return schema_data
         except Exception as e:
             logger.error(f"获取schema失败: {e}")
             raise
-    
-    async def next_page(self) -> Dict[str, Any]:
-        """获取下一页数据"""
-        try:
-            if not self.session:
-                raise Exception("数据库连接未建立")
-
-            logger.info("请求下一页数据")
-            result = await self.session.call_tool("next_page", {})
-            
-            if not result.content:
-                return {
-                    "success": False,
-                    "error": "未收到响应",
-                    "results": None,
-                    "rowcount": 0
-                }
-            
-            response_data = json.loads(result.content[0].text)
-            return self._format_pagination_result(response_data)
-            
-        except Exception as e:
-            logger.error(f"获取下一页失败: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "results": None,
-                "rowcount": 0
-            }
-
-    async def prev_page(self) -> Dict[str, Any]:
-        """获取上一页数据"""
-        try:
-            if not self.session:
-                raise Exception("数据库连接未建立")
-
-            logger.info("请求上一页数据")
-            result = await self.session.call_tool("prev_page", {})
-            
-            if not result.content:
-                return {
-                    "success": False,
-                    "error": "未收到响应",
-                    "results": None,
-                    "rowcount": 0
-                }
-            
-            response_data = json.loads(result.content[0].text)
-            return self._format_pagination_result(response_data)
-            
-        except Exception as e:
-            logger.error(f"获取上一页失败: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "results": None,
-                "rowcount": 0
-            }
-
-    def _format_pagination_result(self, response_data: Dict) -> Dict[str, Any]:
-        """格式化分页结果"""
-        if response_data.get("success", False):
-            results = response_data.get("results", [])
-            columns = None
-            
-            if results and isinstance(results, list) and len(results) > 0:
-                if isinstance(results[0], dict):
-                    columns = list(results[0].keys())
-            
-            return {
-                "success": True,
-                "results": results,
-                "error": None,
-                "rowcount": len(results) if results else 0,
-                "columns": columns,
-                "pagination": response_data.get("pagination"),
-                "totalRows": response_data.get("totalRows")
-            }
-        else:
-            return {
-                "success": False,
-                "results": None,
-                "error": response_data.get("error", "未知错误"),
-                "rowcount": 0,
-                "columns": None
-            }
 
     async def execute_sql(self, sql: str, page: int = 0, page_size: int = 50) -> Dict[str, Any]:
-        """
-        执行SQL查询，支持分页
-        """
         try:
-            if not self.session:
-                raise Exception("数据库连接未建立")
-
-            logger.info(f"执行SQL: {sql}, page: {page}, page_size: {page_size}")
-            
-            # 通过MCP执行SQL
-            result = await self.session.call_tool("query_data", {
-                "sql": sql,
-                "page": page,
-                "page_size": page_size
-            })
-            
-            logger.info(f"MCP返回结果类型: {type(result)}")
-            logger.info(f"MCP返回内容: {result}")
-            
-            if not result.content:
-                logger.error("未收到查询结果内容")
-                return {
-                    "success": False,
-                    "results": None,
-                    "error": "未收到查询结果",
-                    "rowcount": 0,
-                    "columns": None
-                }
-            
-            # 打印原始内容用于调试
-            raw_content = result.content[0].text
-            logger.info(f"原始响应内容: {raw_content}")
-            
-            # 解析结果
-            response_data = json.loads(raw_content)
-            
-            # 标准化返回格式
-            if response_data.get("success", False):
-                results = response_data.get("results", [])
-                columns = None
-                
-                # 提取列名（如果有数据的话）
-                if results and isinstance(results, list) and len(results) > 0:
-                    if isinstance(results[0], dict):
-                        columns = list(results[0].keys())
-                
+            with self.conn.cursor() as cursor:
+                # 只允许只读查询
+                if not sql.strip().lower().startswith("select"):
+                    return {
+                        "success": False,
+                        "results": None,
+                        "error": "只允许SELECT查询",
+                        "rowcount": 0,
+                        "columns": None
+                    }
+                cursor.execute(sql)
+                results = cursor.fetchall()
+                columns = list(results[0].keys()) if results else []
+                # 分页
+                total_rows = len(results)
+                start = page * page_size
+                end = start + page_size
+                page_data = results[start:end]
                 return {
                     "success": True,
-                    "results": results,
+                    "results": page_data,
                     "error": None,
-                    "rowcount": len(results) if results else 0,
+                    "rowcount": len(page_data),
                     "columns": columns,
-                    "pagination": response_data.get("pagination"),
-                    "totalRows": response_data.get("totalRows")
+                    "pagination": {
+                        "current_page": page,
+                        "page_size": page_size,
+                        "total_rows": total_rows,
+                        "total_pages": (total_rows + page_size - 1) // page_size if total_rows > 0 else 0
+                    },
+                    "totalRows": total_rows
                 }
-            else:
-                return {
-                    "success": False,
-                    "results": None,
-                    "error": response_data.get("error", "未知错误"),
-                    "rowcount": 0,
-                    "columns": None
-                }
-                
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON解析失败: {e}")
-            logger.error(f"原始内容: {raw_content if 'raw_content' in locals() else 'N/A'}")
-            return {
-                "success": False,
-                "results": None,
-                "error": f"JSON解析失败: {str(e)}",
-                "rowcount": 0,
-                "columns": None
-            }
         except Exception as e:
             logger.error(f"SQL执行失败: {e}")
             return {
@@ -296,50 +151,13 @@ class DatabaseHandler:
                 "rowcount": 0,
                 "columns": None
             }
-    
-    async def query_with_schema(self, sql: str) -> Dict[str, Any]:
-        """
-        执行SQL查询并附带schema信息
-        
-        Args:
-            sql: SQL语句
-            
-        Returns:
-            包含查询结果和schema信息的字典
-        """
-        try:
-            # 并行获取schema和执行查询
-            schema_task = self.get_schema()
-            query_task = self.execute_sql(sql)
-            
-            schema, query_result = await asyncio.gather(schema_task, query_task)
-            
-            return {
-                **query_result,
-                "schema": schema,
-                "sql": sql
-            }
-            
-        except Exception as e:
-            logger.error(f"查询执行失败: {e}")
-            return {
-                "success": False,
-                "results": None,
-                "error": str(e),
-                "rowcount": 0,
-                "columns": None,
-                "schema": None,
-                "sql": sql
-            }
-    
+
     def _is_cache_valid(self) -> bool:
-        """检查缓存是否有效"""
         if not self._schema_cache or not self._cache_timestamp:
             return False
-        
         elapsed = (datetime.now() - self._cache_timestamp).total_seconds()
         return elapsed < self._cache_ttl
-    
+
     def format_results(self, query_result: Dict[str, Any], format_type: str = "json") -> str:
         """
         格式化查询结果
