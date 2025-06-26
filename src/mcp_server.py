@@ -10,6 +10,7 @@ import MySQLdb.cursors
 
 from mcp.server.fastmcp import FastMCP
 import dotenv
+import libinjection
 
 dotenv.load_dotenv()
 
@@ -273,6 +274,14 @@ def contains_sensitive_field(sql: str) -> bool:
             return True
     return False
 
+def is_sql_injection(sql: str) -> bool:
+    # 使用 pylibinjection 检测 SQL 注入
+    try:
+        return libinjection.is_sql_injection(sql)["is_sqli"]   # 只取布尔位
+    except Exception as e:
+        logger.warning(f"SQL注入检测失败: {e}")
+        return False
+
 @mcp.tool()
 def query_data(sql: str, page: int = 0, page_size: int = 50) -> Dict[str, Any]:
     """执行只读SQL查询，支持分页"""
@@ -281,6 +290,14 @@ def query_data(sql: str, page: int = 0, page_size: int = 50) -> Dict[str, Any]:
     logger.info(f"时间戳: {timestamp}")
     logger.info(f"SQL语句: {sql}")
     logger.info(f"请求页码: {page}, 页大小: {page_size}")
+
+    # SQL注入检测
+    if is_sql_injection(sql):
+        logger.warning(f"检测到疑似SQL注入被拒绝: {sql}")
+        return {
+            "success": False,
+            "error": "检测到疑似SQL注入，已拒绝执行"
+        }
 
     # 敏感字段检测
     if contains_sensitive_field(sql):
