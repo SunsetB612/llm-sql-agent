@@ -56,7 +56,7 @@ class LLMClient:
             请严格根据上述表和字段，根据用户问题生成SQL语句：
             """
         
-        print(base_prompt)
+        #print(base_prompt)
         return base_prompt
     
     def _call_api(self, messages: list) -> str:

@@ -4,6 +4,8 @@ import logging
 import time
 from pathlib import Path
 import re
+from collections import deque
+import json
 
 import MySQLdb
 import MySQLdb.cursors
@@ -34,6 +36,81 @@ pagination_state = {
     "page_size": 50,  # 每页显示行数
     "total_rows": 0
 }
+
+# ----- 对话上下文管理 -----
+# 存储所有活跃的对话会话
+conversation_sessions = {}
+
+# 每个会话的最大上下文长度
+MAX_CONTEXT_LENGTH = 10
+
+# 上下文过期时间（秒）
+CONTEXT_EXPIRE_TIME = 3600  # 1小时
+
+class ConversationSession:
+    """对话会话管理类"""
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.context = deque(maxlen=MAX_CONTEXT_LENGTH)
+        self.last_activity = time.time()
+        self.metadata = {
+            "created_at": time.time(),
+            "total_queries": 0,
+            "successful_queries": 0,
+            "failed_queries": 0
+        }
+    
+    def add_context(self, sql: str, result: Dict[str, Any], user_message: str = ""):
+        """添加上下文信息"""
+        context_item = {
+            "timestamp": time.time(),
+            "sql": sql,
+            "result": result,
+            "user_message": user_message,
+            "success": result.get("success", False)
+        }
+        self.context.append(context_item)
+        self.last_activity = time.time()
+        
+        # 更新统计信息
+        self.metadata["total_queries"] += 1
+        if result.get("success", False):
+            self.metadata["successful_queries"] += 1
+        else:
+            self.metadata["failed_queries"] += 1
+    
+    def get_context_summary(self) -> Dict[str, Any]:
+        """获取上下文摘要"""
+        return {
+            "session_id": self.session_id,
+            "context_length": len(self.context),
+            "last_activity": self.last_activity,
+            "metadata": self.metadata,
+            "recent_queries": list(self.context)[-3:] if self.context else []  # 最近3个查询
+        }
+    
+    def is_expired(self) -> bool:
+        """检查会话是否过期"""
+        return time.time() - self.last_activity > CONTEXT_EXPIRE_TIME
+
+def get_or_create_session(session_id: str) -> ConversationSession:
+    """获取或创建会话"""
+    if session_id not in conversation_sessions:
+        conversation_sessions[session_id] = ConversationSession(session_id)
+    return conversation_sessions[session_id]
+
+def cleanup_expired_sessions():
+    """清理过期的会话"""
+    expired_sessions = []
+    for session_id, session in conversation_sessions.items():
+        if session.is_expired():
+            expired_sessions.append(session_id)
+    
+    for session_id in expired_sessions:
+        del conversation_sessions[session_id]
+        logger.info(f"清理过期会话: {session_id}")
+
+# ----- 对话上下文管理结束 -----
 
 SENSITIVE_FIELDS = ['password', 'salary', 'ssn', 'credit_card']
 
@@ -275,37 +352,80 @@ def contains_sensitive_field(sql: str) -> bool:
     return False
 
 def is_sql_injection(sql: str) -> bool:
-    # 使用 pylibinjection 检测 SQL 注入
+    sql_lower = sql.strip().lower()
+    # 只允许SELECT/SHOW/EXPLAIN等只读查询
+    if not (sql_lower.startswith('select') or sql_lower.startswith('show') or sql_lower.startswith('explain')):
+        return True  # 非只读查询一律拒绝
     try:
-        return libinjection.is_sql_injection(sql)["is_sqli"]   # 只取布尔位
+        result = libinjection.is_sql_injection(sql)
+        if result.get('is_sqli', False):
+            # 进一步用pattern检查
+            injection_patterns = [
+                ' or 1=1',
+                ' or 1=1;',
+                ' or 1=1--',
+                ' or 1=1#',
+                ' union select',
+                ' union all select',
+                '; drop ',
+                '; insert ',
+                '; update ',
+                '; delete ',
+                ' and sleep(',
+                ' benchmark(',
+                ' and (select',
+                ' and exists(',
+                ' and (1=1',
+                ' or (1=1',
+            ]
+            for pattern in injection_patterns:
+                if pattern in sql_lower:
+                    return True
+            # 没有明显注入特征，放行
+            return False
+        return False
     except Exception as e:
         logger.warning(f"SQL注入检测失败: {e}")
         return False
 
 @mcp.tool()
-def query_data(sql: str, page: int = 0, page_size: int = 50) -> Dict[str, Any]:
-    """执行只读SQL查询，支持分页"""
+def query_data(sql: str, page: int = 0, page_size: int = 50, session_id: str = "default", user_message: str = "") -> Dict[str, Any]:
+    """执行只读SQL查询，支持分页和多轮对话上下文"""
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     logger.info("=== 新的SQL查询开始 ===")
     logger.info(f"时间戳: {timestamp}")
+    logger.info(f"会话ID: {session_id}")
     logger.info(f"SQL语句: {sql}")
+    logger.info(f"用户消息: {user_message}")
     logger.info(f"请求页码: {page}, 页大小: {page_size}")
+
+    # 清理过期会话
+    cleanup_expired_sessions()
+    
+    # 获取或创建会话
+    session = get_or_create_session(session_id)
 
     # SQL注入检测
     if is_sql_injection(sql):
         logger.warning(f"检测到疑似SQL注入被拒绝: {sql}")
-        return {
+        result = {
             "success": False,
             "error": "检测到疑似SQL注入，已拒绝执行"
         }
+        # 记录到上下文
+        session.add_context(sql, result, user_message)
+        return result
 
     # 敏感字段检测
     if contains_sensitive_field(sql):
         logger.warning(f"查询包含敏感字段被拒绝: {sql}")
-        return {
+        result = {
             "success": False,
             "error": "查询包含敏感字段，已拒绝执行"
         }
+        # 记录到上下文
+        session.add_context(sql, result, user_message)
+        return result
 
     try:
         # 如果是新查询，重置分页状态
@@ -329,6 +449,8 @@ def query_data(sql: str, page: int = 0, page_size: int = 50) -> Dict[str, Any]:
                 "error": "Potentially unsafe query detected. Only SELECT queries are allowed."
             }
             logger.info(f"返回结果: {result}")
+            # 记录到上下文
+            session.add_context(sql, result, user_message)
             return result
 
         conn = None
@@ -369,6 +491,8 @@ def query_data(sql: str, page: int = 0, page_size: int = 50) -> Dict[str, Any]:
                 
                 logger.info("=== SQL查询结束 ===")
                 logger.info(f"返回结果长度: {len(str(result))}")
+                # 记录到上下文
+                session.add_context(sql, result, user_message)
                 return result
                 
             except Exception as e:
@@ -380,6 +504,8 @@ def query_data(sql: str, page: int = 0, page_size: int = 50) -> Dict[str, Any]:
                     "error": str(e)
                 }
                 logger.info(f"返回错误结果: {result}")
+                # 记录到上下文
+                session.add_context(sql, result, user_message)
                 return result
                 
         except Exception as e:
@@ -390,6 +516,8 @@ def query_data(sql: str, page: int = 0, page_size: int = 50) -> Dict[str, Any]:
                 "error": str(e)
             }
             logger.info(f"返回连接错误结果: {result}")
+            # 记录到上下文
+            session.add_context(sql, result, user_message)
             return result
             
         finally:
@@ -406,6 +534,8 @@ def query_data(sql: str, page: int = 0, page_size: int = 50) -> Dict[str, Any]:
             "error": f"Internal error: {str(e)}"
         }
         logger.info(f"返回异常结果: {result}")
+        # 记录到上下文
+        session.add_context(sql, result, user_message)
         return result
 
 
@@ -441,6 +571,61 @@ def get_logs() -> Dict[str, Any]:
         "logs": recent_logs
     }
 
+
+@mcp.tool()
+def get_conversation_context(session_id: str = "default") -> Dict[str, Any]:
+    """获取指定会话的上下文信息"""
+    cleanup_expired_sessions()
+    
+    if session_id not in conversation_sessions:
+        return {
+            "success": False,
+            "error": f"会话 {session_id} 不存在"
+        }
+    
+    session = conversation_sessions[session_id]
+    return {
+        "success": True,
+        "context": session.get_context_summary()
+    }
+
+
+@mcp.tool()
+def clear_conversation_context(session_id: str = "default") -> Dict[str, Any]:
+    """清理指定会话的上下文"""
+    if session_id in conversation_sessions:
+        del conversation_sessions[session_id]
+        logger.info(f"清理会话上下文: {session_id}")
+        return {
+            "success": True,
+            "message": f"会话 {session_id} 上下文已清理"
+        }
+    else:
+        return {
+            "success": False,
+            "error": f"会话 {session_id} 不存在"
+        }
+
+
+@mcp.tool()
+def list_active_sessions() -> Dict[str, Any]:
+    """列出所有活跃的会话"""
+    cleanup_expired_sessions()
+    
+    active_sessions = []
+    for session_id, session in conversation_sessions.items():
+        active_sessions.append({
+            "session_id": session_id,
+            "context_length": len(session.context),
+            "last_activity": session.last_activity,
+            "metadata": session.metadata
+        })
+    
+    return {
+        "success": True,
+        "active_sessions": active_sessions,
+        "total_sessions": len(active_sessions)
+    }
 
 
 def validate_config():

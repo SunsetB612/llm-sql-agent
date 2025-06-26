@@ -7,19 +7,17 @@ if __name__ == "__main__":
     test_sqls = [
         # 正常查询
         "SELECT * FROM student;",
-        "SELECT * FROM course;",
+        "SELECT title FROM course;",
         
         # 注入攻击测试
-        "SELECT * FROM user WHERE id=1 OR 1=1;",
-        "SELECT * FROM user WHERE id=1 OR 1=1 --",
-        "SELECT * FROM user WHERE id=1; DROP TABLE user;",
-        "SELECT * FROM user UNION SELECT * FROM admin;",
-        "SELECT * FROM user WHERE id=1 AND SLEEP(5);",
-        "SELECT * FROM user WHERE id=1 AND BENCHMARK(1000000,MD5(1));",
-        "SELECT * FROM user WHERE id=1 # 注释",
-        "SELECT * FROM user WHERE id=1; INSERT INTO user VALUES(1,'hack');",
-        "SELECT * FROM user WHERE id=1; UPDATE user SET password='hack';",
-        "SELECT * FROM user WHERE id=1; DELETE FROM user;",
+        "SELECT * FROM student WHERE ID=1 OR 1=1;",
+        "SELECT * FROM student WHERE ID=1 OR 1=1 --",
+        "SELECT * FROM student WHERE ID=1; DROP TABLE student;",
+        "SELECT * FROM student WHERE ID=1 AND SLEEP(5);",
+        "SELECT * FROM student WHERE ID=1 AND BENCHMARK(1000000,MD5(1));",
+        "SELECT * FROM student WHERE ID=1; INSERT INTO student VALUES(1,'hack');",
+        "SELECT * FROM student WHERE ID=1; UPDATE student SET password='hack';",
+        "SELECT * FROM student WHERE ID=1; DELETE FROM student;",
     ]
     
     print("SQL注入检测和拦截结果:")
