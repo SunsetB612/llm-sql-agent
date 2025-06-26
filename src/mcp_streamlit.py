@@ -2,29 +2,16 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import asyncio
-import json
 import time
 import uuid
 from datetime import datetime
-import re
-from typing import Dict, Any, List, Optional
-import traceback
-
+from typing import Dict, Any, List
 import dotenv
-dotenv.load_dotenv()
 
 # 导入现有的模块
 try:
-    from src.llm_client import create_llm_client
-    from src.database_handler import DatabaseHandler, DatabaseConfig
-    from src.mcp_server import (
-        get_or_create_session, 
-        cleanup_expired_sessions,
-        clear_conversation_context,
-        get_conversation_context
-    )
+    from mcp_llm_client import create_llm_client
+    from mcp_http_client import mcp_query, mcp_schema
     MODULES_LOADED = True
 except ImportError as e:
     st.error(f"模块导入失败: {str(e)}")
@@ -83,45 +70,33 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+dotenv.load_dotenv()
+
 class StreamlitNLQuerySystem:
-    """Streamlit版本的自然语言查询系统"""
-    
+    """Streamlit版本的自然语言查询系统（HTTP API 版）"""
     def __init__(self):
-        self.db_config = DatabaseConfig()
         self.session_id = self._get_or_create_session_id()
-        
     def _get_or_create_session_id(self):
-        """获取或创建会话ID"""
         if 'session_id' not in st.session_state:
             st.session_state.session_id = f"streamlit_session_{int(time.time())}_{uuid.uuid4().hex[:8]}"
         return st.session_state.session_id
-    
-    async def query_database(self, question: str, use_schema: bool = True) -> Dict[str, Any]:
-        """执行数据库查询"""
+    def query_database(self, question: str, use_schema: bool = True) -> Dict[str, Any]:
         try:
-            if not MODULES_LOADED:
-                raise Exception("必要的模块未正确加载")
-            # 创建LLM客户端
+            schema_info = None
+            if use_schema:
+                schema_info = mcp_schema()
             llm_client = create_llm_client()
-            # 创建数据库处理器
-            async with DatabaseHandler(self.db_config) as db_handler:
-                # 获取数据库结构
-                schema_info = None
-                if use_schema:
-                    schema_info = await db_handler.get_schema()
-                # 生成SQL
-                sql = llm_client.generate_sql(question, schema_info)
-                # 执行查询
-                query_result = await db_handler.execute_sql(sql, page=0, page_size=1000000)
-                return {
-                    "question": question,
-                    "sql": sql,
-                    "query_result": query_result,
-                    "schema_used": schema_info is not None,
-                    "session_id": self.session_id
-                }
+            sql = llm_client.generate_sql(question, schema_info)
+            query_result = mcp_query(sql, page=0, page_size=1000000, session_id=self.session_id, user_message=question)
+            return {
+                "question": question,
+                "sql": sql,
+                "query_result": query_result,
+                "schema_used": schema_info is not None,
+                "session_id": self.session_id
+            }
         except Exception as e:
-            st.error(f"查询失败: {str(e)}\n{traceback.format_exc()}")
+            st.error(f"查询失败: {str(e)}")
             return {
                 "question": question,
                 "sql": "",
@@ -283,7 +258,7 @@ def main():
             if question.strip():
                 with st.spinner("正在处理您的查询..."):
                     # 执行查询
-                    result = asyncio.run(system.query_database(question))
+                    result = system.query_database(question)
                     # 保存到历史记录
                     if 'query_history' not in st.session_state:
                         st.session_state.query_history = []
@@ -291,7 +266,7 @@ def main():
                         'question': question,
                         'sql': result['sql'],
                         'success': result['query_result']['success'],
-                        'rowcount': result['query_result']['rowcount'],
+                        'rowcount': result['query_result'].get('rowCount', 0),
                         'error': result['query_result'].get('error', ''),
                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     }
@@ -314,7 +289,7 @@ def main():
             with st.expander("📝 生成的SQL语句", expanded=True):
                 st.code(last_result['sql'], language='sql')
             if last_result['query_result']['success']:
-                rowcount = last_result['query_result']['rowcount']
+                rowcount = last_result['query_result'].get('rowCount', 0)
                 st.markdown(f"""
                 <div class="success-box">
                     ✅ <strong>查询成功!</strong> 返回 {rowcount} 条记录

@@ -5,7 +5,6 @@ import time
 from pathlib import Path
 import re
 from collections import deque
-import json
 
 import MySQLdb
 import MySQLdb.cursors
@@ -156,6 +155,18 @@ def ensure_log_directory():
         print(f"创建日志目录: {log_dir}")
     return log_dir
 
+MAX_LOG_LINES = 2000  # 日志最大保留行数
+
+def trim_log_file(log_file: Path, max_lines: int = MAX_LOG_LINES):
+    """修剪日志文件，只保留最新max_lines行"""
+    if not log_file.exists():
+        return
+    with open(log_file, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+    if len(lines) > max_lines:
+        with open(log_file, 'w', encoding='utf-8') as f:
+            f.writelines(lines[-max_lines:])
+
 def setup_logger():
     """设置日志配置，日志追加写入"""
     log_dir = ensure_log_directory()
@@ -176,7 +187,15 @@ def setup_logger():
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-    file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+    class TrimmingFileHandler(logging.FileHandler):
+        def emit(self, record):
+            super().emit(record)
+            try:
+                trim_log_file(log_file, MAX_LOG_LINES)
+            except Exception:
+                pass
+
+    file_handler = TrimmingFileHandler(log_file, mode='a', encoding='utf-8')
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(formatter)
 
@@ -646,3 +665,33 @@ def main():
 if __name__ == "__main__":
     main()
     mcp.run()
+
+# === 新增 HTTP API 服务 ===
+try:
+    from flask import Flask, request, jsonify
+    app = Flask(__name__)
+
+    @app.route('/query', methods=['POST'])
+    def http_query():
+        data = request.json
+        sql = data.get('sql')
+        page = data.get('page', 0)
+        page_size = data.get('page_size', 50)
+        session_id = data.get('session_id', 'default')
+        user_message = data.get('user_message', '')
+        result = query_data(sql, page, page_size, session_id, user_message)
+        return jsonify(result)
+
+    @app.route('/schema', methods=['GET'])
+    def http_schema():
+        table = request.args.get('table')
+        return jsonify(get_schema_filtered(table))
+
+    @app.route('/logs', methods=['GET'])
+    def http_logs():
+        return jsonify(get_logs())
+
+    if __name__ == '__main__':
+        app.run(host='0.0.0.0', port=8000)
+except ImportError:
+    pass

@@ -1,4 +1,3 @@
-import json
 import requests
 from typing import Optional, Dict, Any
 import os
@@ -158,19 +157,3 @@ def generate_sql(question: str, schema_info: Optional[Dict] = None) -> str:
     """
     client = create_llm_client()
     return client.generate_sql(question, schema_info)
-
-if __name__ == "__main__":
-    # 测试代码
-    try:
-        # 创建客户端
-        client = create_llm_client()
-        
-        # 测试SQL生成
-        test_question = "List the name of all courses ordered by their titles and credits"
-        sql = client.generate_sql(test_question)
-        print(f"问题: {test_question}")
-        print(f"生成的SQL: {sql}")
-        
-    except Exception as e:
-        print(f"错误: {e}")
-        print("请确保设置了环境变量DASHSCOPE_API_KEY")
