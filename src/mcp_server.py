@@ -281,19 +281,20 @@ def get_schema_filtered(table_name: str = None) -> Dict[str, Any]:
 
 
 def is_safe_query(sql: str) -> bool:
-    """基本的SQL安全检测，只允许SELECT等只读查询"""
-    sql_lower = sql.strip().lower()
-
-    safe_keywords = ['select', 'show', 'describe', 'desc', 'explain']
+    sql_lower = sql.lstrip().lower()
+    allowed_prefixes = ["select", "show", "desc", "describe", "explain"]
+    for prefix in allowed_prefixes:
+        if re.match(rf"^{prefix}(\s|\(|\*|\b)", sql_lower):
+            break
+    else:
+        return False
     dangerous_keywords = [
         'insert', 'update', 'delete', 'drop', 'create', 'alter',
         'truncate', 'replace', 'merge', 'call', 'exec', 'execute'
     ]
-
-    starts_with_safe = any(sql_lower.startswith(keyword) for keyword in safe_keywords)
-    contains_dangerous = any(keyword in sql_lower for keyword in dangerous_keywords)
-
-    return starts_with_safe and not contains_dangerous
+    if any(keyword in sql_lower for keyword in dangerous_keywords):
+        return False
+    return True
 
 @mcp.tool()
 def next_page() -> Dict[str, Any]:
@@ -372,9 +373,6 @@ def contains_sensitive_field(sql: str) -> bool:
 
 def is_sql_injection(sql: str) -> bool:
     sql_lower = sql.strip().lower()
-    # 只允许SELECT/SHOW/EXPLAIN等只读查询
-    if not (sql_lower.startswith('select') or sql_lower.startswith('show') or sql_lower.startswith('explain')):
-        return True  # 非只读查询一律拒绝
     try:
         result = libinjection.is_sql_injection(sql)
         if result.get('is_sqli', False):
@@ -424,7 +422,20 @@ def query_data(sql: str, page: int = 0, page_size: int = 50, session_id: str = "
     # 获取或创建会话
     session = get_or_create_session(session_id)
 
-    # SQL注入检测
+    # 只读 SQL 白名单过滤
+    if not is_safe_query(sql):
+        logger.warning(f"不安全查询被拒绝: {sql}")
+        logger.info("=== SQL查询结束（不安全） ===")
+        result = {
+            "success": False,
+            "error": "只允许只读查询（SELECT）"
+        }
+        logger.info(f"返回结果: {result}")
+        # 记录到上下文
+        session.add_context(sql, result, user_message)
+        return result
+
+    # SQL 注入检测
     if is_sql_injection(sql):
         logger.warning(f"检测到疑似SQL注入被拒绝: {sql}")
         result = {
@@ -459,18 +470,6 @@ def query_data(sql: str, page: int = 0, page_size: int = 50, session_id: str = "
             # 如果是同一个查询但指定了不同的页码，更新当前页
             pagination_state["current_page"] = page
             logger.info(f"相同查询，更新页码到: {page}")
-
-        if not is_safe_query(sql):
-            logger.warning(f"不安全查询被拒绝: {sql}")
-            logger.info("=== SQL查询结束（不安全） ===")
-            result = {
-                "success": False,
-                "error": "Potentially unsafe query detected. Only SELECT queries are allowed."
-            }
-            logger.info(f"返回结果: {result}")
-            # 记录到上下文
-            session.add_context(sql, result, user_message)
-            return result
 
         conn = None
         cursor = None
