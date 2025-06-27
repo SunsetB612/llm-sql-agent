@@ -1,6 +1,7 @@
 # 🦉 Natural-Language SQL Query System
 
 
+
 ## 📋 项目概述
 
 利用 **Large Language Model (LLM)** + **Model Context Protocol (MCP)**，让你用普通话就能查询 MySQL！
