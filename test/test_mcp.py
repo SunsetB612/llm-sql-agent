@@ -6,7 +6,7 @@ from mcp.client.stdio import stdio_client
 from pathlib import Path
 
 project_root = Path(__file__).resolve().parent.parent
-server_script = project_root / "src" / "mcp-server.py"
+server_script = project_root / "src" / "mcp_server.py"
 
 async def test_mcp_server():
     """简单测试MCP服务是否正常工作"""
@@ -26,8 +26,6 @@ async def test_mcp_server():
                 print("\n测试1: 基本连接查询")
                 print("正在调用 query_data...")
                 result = await session.call_tool("query_data", {"sql": "SELECT 1 as test"})
-                print(f"调用完成，结果类型: {type(result)}")
-                print(f"结果内容: {result}")
                 data = json.loads(result.content[0].text)
                 if data.get("success"):
                     print(f"✓ 查询成功: {data['results']}")
