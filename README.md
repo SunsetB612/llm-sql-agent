@@ -2,9 +2,11 @@
 
 
 
+
 ## 📋 项目概述
 
 利用 **Large Language Model (LLM)** + **Model Context Protocol (MCP)**，让你用普通话就能查询 MySQL！
+
 本项目是一个创新的数据库查询系统，允许用户使用自然语言查询数据库，无需编写复杂 SQL 语句。
 
 ### ✨ 核心特性
