@@ -372,31 +372,36 @@ def contains_sensitive_field(sql: str) -> bool:
     return False
 
 def is_sql_injection(sql: str) -> bool:
+    """
+    简易 SQL 注入检测。
+    利用 libinjection 库和常见注入特征模式，拦截明显的拼接注入或关键词注入攻击。
+    返回 True 表示检测到注入风险，False 表示未检测到。
+    """
     sql_lower = sql.strip().lower()
     try:
+        # 1. 使用 libinjection 库检测
         result = libinjection.is_sql_injection(sql)
         if result.get('is_sqli', False):
-            # 进一步用pattern检查
+            # 2. 进一步用正则检测常见注入特征
             injection_patterns = [
-                ' or 1=1',
-                ' or 1=1;',
-                ' or 1=1--',
-                ' or 1=1#',
-                ' union select',
-                ' union all select',
-                '; drop ',
-                '; insert ',
-                '; update ',
-                '; delete ',
-                ' and sleep(',
-                ' benchmark(',
-                ' and (select',
-                ' and exists(',
-                ' and (1=1',
-                ' or (1=1',
+                r'or\s*1\s*=\s*1',
+                r'union\s+select',
+                r';\s*drop\s+',
+                r';\s*insert\s+',
+                r';\s*update\s+',
+                r';\s*delete\s+',
+                r'and\s+sleep\s*\(',
+                r'benchmark\s*\(',
+                r'and\s*\(\s*select',
+                r'and\s+exists\s*\(',
+                r'and\s*\(\s*1\s*=\s*1',
+                r'or\s*\(\s*1\s*=\s*1',
+                r'or\s*1\s*=\s*1--',
+                r'or\s*1\s*=\s*1#',
+                # 可继续补充
             ]
             for pattern in injection_patterns:
-                if pattern in sql_lower:
+                if re.search(pattern, sql_lower):
                     return True
             # 没有明显注入特征，放行
             return False
