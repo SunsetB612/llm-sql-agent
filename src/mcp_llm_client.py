@@ -3,7 +3,9 @@ from typing import Optional, Dict
 import os
 from dataclasses import dataclass
 import re
+import dotenv
 
+dotenv.load_dotenv()
 @dataclass
 class LLMConfig:
     """LLM配置类"""
