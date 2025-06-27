@@ -86,7 +86,16 @@ class StreamlitNLQuerySystem:
             if use_schema:
                 schema_info = mcp_schema()
             llm_client = create_llm_client()
-            sql = llm_client.generate_sql(question, schema_info)
+            # 多轮上下文支持
+            if 'llm_history' not in st.session_state:
+                st.session_state.llm_history = []
+            history = st.session_state.llm_history
+            sql = llm_client.generate_sql(question, schema_info, history=history)
+            # 更新历史
+            st.session_state.llm_history = history + [
+                {"role": "user", "content": question},
+                {"role": "assistant", "content": sql}
+            ]
             query_result = mcp_query(sql, page=0, page_size=1000000, session_id=self.session_id, user_message=question)
             return {
                 "question": question,

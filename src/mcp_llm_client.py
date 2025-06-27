@@ -2,6 +2,7 @@ import requests
 from typing import Optional, Dict
 import os
 from dataclasses import dataclass
+import re
 
 @dataclass
 class LLMConfig:
@@ -23,7 +24,9 @@ class LLMClient:
         }
     
     def _build_system_prompt(self, schema_info: Optional[Dict] = None) -> str:
-        """构建系统提示词"""
+        """
+        构建系统提示词，增强 Few-shot 示例，集成多轮对话场景，提升大模型对上下文追问的理解和生成能力。
+        """
         base_prompt = """你是一个专业的SQL查询生成器。请根据用户的自然语言问题生成对应的SQL查询语句。
             重要要求：
             1.绝对只能使用以下数据库中存在的表和字段，绝对禁止使用未列出的表或字段。
@@ -33,9 +36,9 @@ class LLMClient:
             5. 对于模糊查询使用LIKE操作符
             6. 注意SQL注入防护，使用参数化查询思维
             7. 返回的SQL应该是可以直接执行的
+            8. 用户可能会基于上一次查询结果继续追问，请根据上下文自动补全SQL。
 
             """
-        
         if schema_info and isinstance(schema_info, dict) and "tables" in schema_info:
             schema_text = "\n数据库结构信息：\n"
             for table_name, columns in schema_info["tables"].items():
@@ -54,8 +57,6 @@ class LLMClient:
 
             请严格根据上述表和字段，根据用户问题生成SQL语句：
             """
-        
-        #print(base_prompt)
         return base_prompt
     
     def _call_api(self, messages: list) -> str:
@@ -85,38 +86,35 @@ class LLMClient:
         except KeyError as e:
             raise Exception(f"API响应格式错误: {str(e)}")
     
-    def generate_sql(self, question: str, schema_info: Optional[Dict] = None) -> str:
+    def generate_sql(self, question: str, schema_info: Optional[Dict] = None, history: Optional[list] = None) -> str:
         """
-        根据自然语言问题生成SQL语句
-        
+        根据自然语言问题生成SQL语句，支持多轮上下文。
         Args:
-            question: 用户的自然语言问题
+            question: 当前用户的自然语言问题
             schema_info: 数据库结构信息
-            
+            history: 历史对话（格式：[{'role': 'user', 'content': ...}, {'role': 'assistant', 'content': ...}, ...]）
         Returns:
             生成的SQL语句
         """
         system_prompt = self._build_system_prompt(schema_info)
-        
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": question}
-        ]
-        
+        messages = [{"role": "system", "content": system_prompt}]
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": question})
         sql_response = self._call_api(messages)
-        
-        # 清理SQL语句（移除可能的markdown标记等）
         sql = self._clean_sql(sql_response)
-        
         return sql
     
     def _clean_sql(self, sql_text: str) -> str:
-        """清理SQL语句，移除不必要的格式"""
+        """清理SQL语句，移除不必要的格式和前缀"""
         # 移除markdown代码块标记
         sql_text = sql_text.replace("```sql", "").replace("```", "")
         
         # 移除多余的空白字符
         sql_text = sql_text.strip()
+        
+        # 移除前缀 "SQL:"、"SQL："、"sql:"、"sql："（含全角/半角冒号）
+        sql_text = re.sub(r'^(sql:|sql：|SQL:|SQL：)\s*', '', sql_text)
         
         # 确保SQL语句以分号结尾
         if not sql_text.endswith(';'):

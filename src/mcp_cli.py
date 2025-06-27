@@ -47,6 +47,8 @@ def main():
     last_sql = None
     last_page = 0
     page_size = 50
+    history = []  # 多轮上下文历史
+    llm_client = create_llm_client()
     while True:
         question = input("🤔 请输入您的问题或命令: ").strip()
         if question.lower() in ["quit", "exit", "退出"]:
@@ -87,9 +89,8 @@ def main():
         print(f"\n🔍 处理您的问题: {question}")
         # 获取 schema
         schema_info = mcp_schema()
-        # LLM 生成 SQL
-        llm_client = create_llm_client()
-        sql = llm_client.generate_sql(question, schema_info)
+        # LLM 生成 SQL，传递多轮上下文
+        sql = llm_client.generate_sql(question, schema_info, history=history)
         print(f"生成SQL: {sql}")
         # 通过 MCP HTTP 查询
         query_result = mcp_query(sql, page=0, page_size=1000000, session_id=session_id, user_message=question)
@@ -108,6 +109,9 @@ def main():
             last_results = None
             last_sql = None
             last_page = 0
+        # 更新多轮上下文历史
+        history.append({"role": "user", "content": question})
+        history.append({"role": "assistant", "content": sql})
         print()
 
 if __name__ == "__main__":
